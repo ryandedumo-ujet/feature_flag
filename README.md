@@ -42,11 +42,9 @@ feature_flag/
 
 ## Usage Examples
 
-### Restore Feature Flags to Default
+# Restore specific tenant to default
 
 Use this when you want to reset all feature flags to their default state:
-
-# Restore specific tenant to default
 
 Fill in the required parameters:
    - **`project-id`**: Environment name which can be found in 1Password (e.g., `ujet-staging-qca01`, `ujet-staging-tst01`)
