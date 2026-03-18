@@ -42,7 +42,7 @@ feature_flag/
 
 ## Usage Examples
 
-# Restore specific tenant to default
+### Restore specific tenant to default
 
 Use this when you want to reset all feature flags to their default state:
 
@@ -54,7 +54,7 @@ Fill in the required parameters:
 ./patch.sh project-id base-url restore_default
 ```
 
-# Update single feature flag to a specific tenant
+### Update single feature flag to a specific tenant
 
 Fill in the required parameters:
    - **`project-id`**: Environment name which can be found in 1Password (e.g., `ujet-staging-qca01`, `ujet-staging-tst01`)
