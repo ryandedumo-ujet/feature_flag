@@ -4,9 +4,7 @@
 
 This repository provides tools and utilities for:
 - Managing feature flags across different environments
-- Testing feature flag configurations
-- Automating feature flag deployments
-- Monitoring feature flag states
+- Updating feature flag status
 
 ## Prerequisites
 
@@ -27,38 +25,10 @@ To clone this repository to your local machine, use one of the following methods
 git clone https://github.com/ryandedumo-ujet/feature_flag.git
 ```
 
-#### Using SSH:
-```bash
-git clone git@github.com:ryandedumo-ujet/feature_flag.git
-```
-
-#### Using GitHub CLI:
-```bash
-gh repo clone ryandedumo-ujet/feature_flag
-```
 ### Navigate to the Repository
 
 ```bash
 cd feature_flag
-```
-
-### Install Dependencies
-
-Depending on the tools you're using:
-
-#### For Node.js/JavaScript projects:
-```bash
-npm install
-```
-
-#### For Python projects:
-```bash
-pip install -r requirements.txt
-```
-
-#### For Ruby projects:
-```bash
-bundle install
 ```
 
 ## Repository Structure
@@ -85,3 +55,16 @@ Fill in the required parameters:
 ```bash
 ./patch.sh project-id base-url restore_default
 ```
+
+# Update single feature flag to a specific tenant
+
+Fill in the required parameters:
+   - **`project-id`**: Environment name which can be found in 1Password (e.g., `ujet-staging-qca01`, `ujet-staging-tst01`)
+   - **`base-url`**: Tenant url (e.g., `https://callteam-sfco.qca01.g.ujetstage.co/`)
+   - **`featureflag`**: Feature flag name which will be updated (e.g., `virtual-callback`, `voicebot`)
+   - **`status`**: Boolean status (e.g., `true`, `false`)
+
+```bash
+./patch.sh project-id base-url featureflag status
+```
+
