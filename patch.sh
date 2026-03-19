@@ -1,33 +1,102 @@
 #!/bin/bash
+set -euo pipefail  # Exit on error, undefined variables, and pipe failures
 
 # --- CONFIGURATION ---
-GITHUB_URL="https://api.github.com/repos/UJET/ujet-server/contents/web/app/models/settings/feature_flag_setting.rb?ref=main"
-VAULT="ci-pre-prod"
-TEMP_FILE="flags.json"
+readonly GITHUB_URL="https://api.github.com/repos/UJET/ujet-server/contents/web/app/models/settings/feature_flag_setting.rb?ref=main"
+readonly VAULT="ci-pre-prod"
+readonly TEMP_FILE="flags.json"
+readonly EXCEPTIONS=("chatbot_external" "distinct_ivr_inapp_overcapacity" "use_dual_recording")
 
-PROJECT_ID=$1; BASE_URL=$2; ACTION=$3; STATUS=$4
+# --- ARGUMENTS ---
+readonly PROJECT_ID="${1:-}"
+readonly BASE_URL="${2:-}"
+readonly ACTION="${3:-}"
+readonly STATUS="${4:-}"
 
-if [ -z "$PROJECT_ID" ] || [ -z "$BASE_URL" ] || [ -z "$ACTION" ]; then
-    echo "Usage: ./patch.sh <project_id> <url> <action/flag_name> [true/false]"
-    exit 1
-fi
+# --- HELPER FUNCTIONS ---
+error_exit() {
+    echo "❌ ERROR: $1" >&2
+    exit "${2:-1}"
+}
+
+log_info() {
+    echo "$1"
+}
+
+log_success() {
+    echo "✅ $1"
+}
+
+validate_args() {
+    if [[ -z "$PROJECT_ID" || -z "$BASE_URL" || -z "$ACTION" ]]; then
+        error_exit "Usage: ./patch.sh <project_id> <url> <action/flag_name> [value]
+
+Examples:
+  Restore defaults:  ./patch.sh myproject https://api.example.com restore_default
+  Update flag:       ./patch.sh myproject https://api.example.com my-flag true" 1
+    fi
+
+    # Validate STATUS is provided when not using restore_default
+    if [[ "$ACTION" != "restore_default" && -z "$STATUS" ]]; then
+        error_exit "Value of feature flag:$ACTION is required when updating a specific flag" 1
+    fi
+}
+
+# Normalize flag name (convert underscores to hyphens, except for exceptions)
+normalize_flag_name() {
+    local flag="$1"
+    for exception in "${EXCEPTIONS[@]}"; do
+        [[ "$flag" == "$exception" ]] && echo "$flag" && return
+    done
+    echo "${flag//_/-}"
+}
 
 # --- AUTH & ENDPOINT ---
-SECRET_CODE=$(op item get "$PROJECT_ID" --vault "$VAULT" --fields label=ENV_API_USER_TOKEN --reveal)
-AUTH_TOKEN=$(echo -n "$PROJECT_ID:$SECRET_CODE" | base64)
-UJET_AUTH="Authorization: Basic $AUTH_TOKEN"
-FULL_ENDPOINT="${BASE_URL%/}/env/api/v1/feature_flags"
+get_auth_token() {
+    local secret_code
+    secret_code=$(op item get "$PROJECT_ID" --vault "$VAULT" --fields label=ENV_API_USER_TOKEN --reveal 2>/dev/null) || \
+        error_exit "Failed to retrieve secret from 1Password. Check PROJECT_ID and vault access." 1
+    echo -n "$PROJECT_ID:$secret_code" | base64
+}
 
-# --- EXECUTION ---
-if [ "$ACTION" == "restore_default" ]; then
-    echo "📥 Fetching source from GitHub..."
-    RAW_CONTENT=$(curl -sL -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3.raw" "$GITHUB_URL")
+validate_args
+readonly AUTH_TOKEN=$(get_auth_token)
+readonly UJET_AUTH="Authorization: Basic $AUTH_TOKEN"
+readonly FULL_ENDPOINT="${BASE_URL%/}/env/api/v1/feature_flags"
 
-    echo "🏗️  Generating $TEMP_FILE..."
-    
-    echo "$RAW_CONTENT" | ruby -rjson -e '
+# --- GITHUB FETCH FUNCTIONS ---
+fetch_github_content() {
+    [[ -z "${GITHUB_TOKEN:-}" ]] && error_exit "GITHUB_TOKEN is not set. Export it in your environment or shell profile." 1
+
+    log_info "📥 Fetching source from GitHub..."
+    local content
+    content=$(curl -sL -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3.raw" "$GITHUB_URL")
+
+    if [[ -z "$content" ]]; then
+        local http_code
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITHUB_TOKEN" "$GITHUB_URL")
+
+        case "$http_code" in
+            401) error_exit "Authentication failed. GITHUB_TOKEN is invalid or expired.\n   Generate new token: https://github.com/settings/tokens" 1 ;;
+            404) error_exit "File not found. Check access to UJET/ujet-server repository." 1 ;;
+            403) error_exit "Access forbidden. Token may lack 'repo' scope.\n   Regenerate with proper permissions." 1 ;;
+            *)   error_exit "GitHub API request failed with HTTP $http_code" 1 ;;
+        esac
+    fi
+
+    log_success "Content fetched successfully (${#content} characters)"
+    echo "$content"
+}
+
+# --- RUBY PARSING FUNCTION ---
+generate_flags_json() {
+    local raw_content="$1"
+
+    log_info "🏗️  Generating $TEMP_FILE..."
+
+    echo "$raw_content" | ruby -rjson -e '
       EXCEPTIONS = ["chatbot_external", "distinct_ivr_inapp_overcapacity", "use_dual_recording"]
-      content = STDIN.read.gsub(/^\s*#.*$/, "") 
+      content = STDIN.read.gsub(/^\s*#.*$/, "")
       final_flags = {}
 
       def clean_val(v)
@@ -40,65 +109,84 @@ if [ "$ACTION" == "restore_default" ]; then
         v.gsub(/[\x27\x22]/, "")
       end
 
-      # 1. Parse Nested Blocks
+      # Parse Nested Blocks
       content.scan(/attribute\s+:(\w+)\s+do\n(.+?)\n\s+end/m).each do |parent, body|
         key = EXCEPTIONS.include?(parent) ? parent : parent.gsub("_", "-")
         block_data = {}
-        
-        # SWAPPED REGEX ORDER: Look for the [array] first, then fallback to simple words
+
         body.scan(/attribute\s+:(\w+).*?default:\s*(\[.*?\]|[^,\n\s]+)/m).each do |inner_name, inner_val|
-          if inner_val =~ /^\[/
-            # Extract all string items inside the array brackets
-            block_data[inner_name] = inner_val.scan(/[\x27\x22]([^\x27\x22]+)[\x27\x22]/).flatten
+          block_data[inner_name] = if inner_val =~ /^\[/
+            inner_val.scan(/[\x27\x22]([^\x27\x22]+)[\x27\x22]/).flatten
           else
-            block_data[inner_name] = clean_val(inner_val)
+            clean_val(inner_val)
           end
         end
         final_flags[key] = block_data
       end
 
-      # 2. Parse Simple Attributes
+      # Parse Simple Attributes
       content.scan(/attribute\s+:(\w+).*?default:\s*([^,\n\s]+)/).each do |name, val_str|
         next if name == "enabled"
         key = EXCEPTIONS.include?(name) ? name : name.gsub("_", "-")
-        unless final_flags.has_key?(key)
-          final_flags[key] = clean_val(val_str)
-        end
+        final_flags[key] ||= clean_val(val_str)
       end
 
-      # Sort the output alphabetically
-      sorted_flags = Hash[final_flags.sort]
-      File.write("flags.json", JSON.pretty_generate(sorted_flags))
-    '
+      STDERR.puts "✅ Parsed #{final_flags.size} feature flags"
+      File.write("flags.json", JSON.pretty_generate(final_flags.sort.to_h))
+    ' || error_exit "Ruby parsing failed. Source file format may have changed." "$?"
 
-    # --- VERIFICATION PREVIEW ---
-    if [ -s "$TEMP_FILE" ]; then
-        echo "🔍 Previewing Array Extraction:"
-        grep -A 10 '"amb-device-capability-overrides":' "$TEMP_FILE"
-        echo "--------------------------------------"
+    [[ ! -s "$TEMP_FILE" ]] && error_exit "$TEMP_FILE is empty or was not created." 1
+
+    local file_size
+    file_size=$(wc -c < "$TEMP_FILE" | tr -d ' ')
+    log_success "$TEMP_FILE generated successfully ($file_size bytes)"
+}
+
+# --- API PATCH FUNCTIONS ---
+send_bulk_patch() {
+    log_info "🚀 Sending bulk patch to: $FULL_ENDPOINT"
+
+    local response
+    response=$(curl -sS -o /dev/null -w "%{http_code}" --request PATCH "$FULL_ENDPOINT" \
+        -H "$UJET_AUTH" \
+        -H "Content-Type: application/json" \
+        -d @"$TEMP_FILE")
+
+    if [[ "$response" =~ ^(200|204)$ ]]; then
+        log_success "Bulk patch successful! (HTTP $response)"
     else
-        echo "❌ Error: $TEMP_FILE generation failed."
-        exit 1
+        error_exit "Bulk patch failed (HTTP $response). Check $TEMP_FILE for correctness." 1
     fi
+}
 
-    echo "🚀 Sending Bulk Patch to: $FULL_ENDPOINT"
-    RESPONSE=$(curl --location --request PATCH "$FULL_ENDPOINT" \
-      -s -o /dev/null -w "%{http_code}" \
-      -H "$UJET_AUTH" \
-      -H "Content-Type: application/json" \
-      -d @"$TEMP_FILE")
+send_single_patch() {
+    local flag
+    flag=$(normalize_flag_name "$ACTION")
 
-    if [[ "$RESPONSE" == "200" || "$RESPONSE" == "204" ]]; then
-        echo "✅ Success! (Status: $RESPONSE)"
+    log_info "🚀 Patching single flag: $flag -> $STATUS"
+
+    local response
+    response=$(curl -sS -w "\n%{http_code}" --request PATCH "$FULL_ENDPOINT" \
+        -H "$UJET_AUTH" \
+        -H "Content-Type: application/json" \
+        -d "{\"$flag\": $STATUS}")
+
+    local http_code="${response##*$'\n'}"
+    local body="${response%$'\n'*}"
+
+    if [[ "$http_code" =~ ^(200|204)$ ]]; then
+        log_success "Flag updated successfully! (HTTP $http_code)"
     else
-        echo "❌ Failed (Status: $RESPONSE)."
-        echo "Check $TEMP_FILE — if it looks correct, the server might require smaller chunks."
+        error_exit "Failed to update flag (HTTP $http_code)\nResponse: $body" 1
     fi
+}
+
+# --- MAIN EXECUTION ---
+if [[ "$ACTION" == "restore_default" ]]; then
+    raw_content=$(fetch_github_content)
+    generate_flags_json "$raw_content"
+    send_bulk_patch
 
 else
-    # Individual Manual Patch
-    FLAG=$ACTION
-    [[ "$FLAG" != "chatbot_external" && "$FLAG" != "distinct_ivr_inapp_overcapacity" && "$FLAG" != "use_dual_recording" ]] && FLAG="${FLAG//_/-}"
-    echo "🚀 Patching single flag: $FLAG -> $STATUS"
-    curl --location --request PATCH "$FULL_ENDPOINT" -i -s -H "$UJET_AUTH" -H "Content-Type: application/json" -d "{\"$FLAG\": $STATUS}" | grep "HTTP/"
+    send_single_patch
 fi
