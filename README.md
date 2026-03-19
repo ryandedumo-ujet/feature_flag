@@ -42,6 +42,12 @@ feature_flag/
 
 ## Usage Examples
 
+- export your **GITHUB_TOKEN** in the shell before executing
+
+```bash
+export GITHUB_TOKEN="ghp_yourtokenhere"
+```
+
 ### Restore specific tenant to default
 
 Use this when you want to reset all feature flags to their default state
