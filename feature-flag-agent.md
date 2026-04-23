@@ -25,7 +25,7 @@ Work through the steps below without stopping. Report only at the Completion Con
 ## Setup
 
 Before running, confirm:
-- Working directory: `/Users/paul/Documents/ujet/automation/feature_flag`
+- Working directory: the root of this repository (wherever you cloned it)
 - 1Password CLI is installed and authenticated: `op whoami`
 - Ruby is installed: `ruby --version`
 
@@ -50,7 +50,6 @@ Fetches flag definitions from the `main` branch of `UJET/ujet-server`, regenerat
 `flags.json`, and bulk-patches the tenant back to those defaults.
 
 ```bash
-cd /Users/paul/Documents/ujet/automation/feature_flag
 ./patch.sh <project-id> <base-url> restore_default
 ```
 
@@ -67,7 +66,6 @@ cd /Users/paul/Documents/ujet/automation/feature_flag
 Sets one flag to a specific value without touching others.
 
 ```bash
-cd /Users/paul/Documents/ujet/automation/feature_flag
 ./patch.sh <project-id> <base-url> <flag-name> <true|false>
 ```
 
@@ -82,7 +80,6 @@ cd /Users/paul/Documents/ujet/automation/feature_flag
 If the script fails, run the debug version to isolate the problem:
 
 ```bash
-cd /Users/paul/Documents/ujet/automation/feature_flag
 ./debug_patch.sh
 ```
 
